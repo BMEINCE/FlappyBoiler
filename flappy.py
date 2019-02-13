@@ -93,7 +93,7 @@ def serialread():
     while True:
         #time.sleep(.005)
         if ser.read(1) == 'z':
-            read_serial = float(ser.read(3)) * (10/9)
+            read_serial = float(ser.read(3))
             q.put(read_serial)
             graphq.put(read_serial)
 
@@ -121,7 +121,7 @@ def jumpThread():
 
         #implements a 150ms lockout after a jump before another jump can be entered
         if int(data/threshold) >= 1:
-            if (datetime.utcnow() - lastjump) >= 150:
+            if False:
                 pass
             else:
                 lastjump = datetime.utcnow()
@@ -133,11 +133,13 @@ def jumpThread():
 
 
 def graphStart():
-    ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=10, blit = True)
+    ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=35, blit = True)
     plt.show()
+    print("graph")
     
 def graphFunc(i):
     global graphq
+    global sensor
     sensor.pop(0)
     sensor.append(graphq.get(True))
     line.set_ydata(sensor)
@@ -336,8 +338,7 @@ def showCalibrationScreen():
     pygame.draw.rect(SCREEN, gold, [100,100,204,49])
     pygame.draw.rect(SCREEN, black, [101,101,202,47])
     pygame.display.flip()
-    #t = Thread(target = calibrate, args = ())
-    #t.start()
+    calib_finished = True
     while True:
         if time.time() > end and calib_finished == True:
             calib_finished = False
@@ -389,9 +390,10 @@ def showWelcomeAnimation():
     while True:
 
         try:
-            j = jumpq.get_nowait()
+            j = jumpq.get()
+            #j = jumpq.get_nowait()
             jumpq.task_done()
-        except EMPTY:
+        except:
             j=0
         if j == 1 or j == 2:
             SOUNDS['wing'].play()
@@ -473,9 +475,10 @@ def mainGame(movementInfo):
     while True:
 
         try:
-            j = jumpq.get_nowait()
+            j = jumpq.get()
+            #j = jumpq.get_nowait()
             jumpq.task_done()
-        except EMPTY:
+        except:
             j=0
         if j == 1 or j == 2:
             if playery > -2 * IMAGES['player'][0].get_height():
@@ -606,9 +609,10 @@ def showGameOverScreen(crashInfo):
     while True:
 
         try:
-            j = jumpq.get_nowait()
+            j = jumpq.get()
+            #j = jumpq.get_nowait()
             jumpq.task_done()
-        except EMPTY:
+        except:
             j=0
         if j == 1 or j == 2:
             if playery + playerHeight >= BASEY - 1:
