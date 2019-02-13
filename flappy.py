@@ -1,6 +1,7 @@
 import serial
 from itertools import cycle
 import random
+from datetime import datetime
 import sys
 import serial
 import time
@@ -21,16 +22,14 @@ fig = plt.figure()
 ax1 = fig.add_subplot(1,1,1)
 y_range = [100,1000]
 sensor = list(range(450,500))
-threshold = 50
 timeAxis = list(range(0,50))
 ax1.set_ylim(y_range)
 line, = ax1.plot(timeAxis,sensor)
-calib_lock = threading.Lock()
-calib_finished = False
-jump_lock = threading.Lock()
-sensor_lock = threading.Lock()
-jump = 0
-jumpstat = 0
+
+threshold = 50
+dataAvg = 500
+lastjump = 0
+
 gold = [194,142,14]
 black = [0,0,0]
 FPS = 60
@@ -45,6 +44,8 @@ s=[0]
 
 q = Queue()
 jumpq = Queue(maxsize=1)
+graphq = Queue(maxsize=4)
+
 
 # list of all possible players (tuple of 3 positions of flap)
 PLAYERS_LIST = (
@@ -87,185 +88,142 @@ except NameError:
     xrange = range
 
 def serialread():
-    global sensor_lock
-    global sensor
+    global graphq
     global q
-    jdata = 0
     while True:
-        time.sleep(.005)
+        #time.sleep(.005)
         if ser.read(1) == 'z':
             read_serial = float(ser.read(3)) * (10/9)
             q.put(read_serial)
-            if q.qsize() > 5:
-                print (q.qsize())
-            sensor_lock.acquire(True)
-            sensor.pop(0)
-            sensor.append(read_serial)
-            sensor_lock.release()
+            graphq.put(read_serial)
 
+            q.join()
+            graphq.join()
+    
 
 def jumpThread():
-    global jump
+    global jumpq
     global threshold
-    global datajump
+    global lastjump
     global q
-    global calib_lock
-    counter = 0
-    state = 0
-    read = 1
-    data = 500
-    while True:
-        if counter >= 6:
-            state = 0
-            counter = 0
 
-        #acquire lock before accessing q
-        calib_lock.acquire(True)
+    data = 500
+
+    while True:
+
         data = q.get()
-        calib_lock.release()
 
         #essentially abs(data - average_data_value)
-        #the average_data_value of the signal has been observed to be 510
-        if data >= 500:
-            data = data - 500
+        if data >= dataAvg:
+            data = data - dataAvg
         else:
-            data = 500 - data
+            data = dataAvg - data
 
-        if int(data/threshold)>=1:
-            if state == 1:
-                time.sleep(0.005)
+        #implements a 150ms lockout after a jump before another jump can be entered
+        if int(data/threshold) >= 1:
+            if (datetime.utcnow() - lastjump) >= 150:
+                pass
             else:
-                state = 1
-                jumpcheck(2)
-                time.sleep(0.005)
+                lastjump = datetime.utcnow()
+                jumpq.put(1)
+                jumpq.join()
+                #do the jump
         else:
-            counter += 1
-            time.sleep(0.005)
-        '''
-        if read == 0:
-            time.sleep(0.01)
-            read = 1
-        elif int(data/threshold) >= 1:
-            counter = 0
-            if state == 1:
-                time.sleep(0.005)
-            else:
-                state = 1
-                jumpcheck(2)
-                read = 0
-                time.sleep(0.005)
-        else:
-            counter += 1
-        '''
+            pass
+
 
 def graphStart():
-    ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=35, blit = True)
+    ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=10, blit = True)
     plt.show()
     
 def graphFunc(i):
-    global sensor
-    global sensor_lock
-    sensor_lock.acquire(True)
+    global graphq
+    sensor.pop(0)
+    sensor.append(graphq.get(True))
     line.set_ydata(sensor)
-    sensor_lock.release()
+    graphq.task_done()
     return line,
 
-#1 returns value, 2 sets to jump
-#Used to control communication of jumps to ensure thread safety
-
-def jumpcheck(i):
-    global jumpstat
-    global jump_lock
-    jump_lock.acquire(True)
-    retval = 0
-    if i == 1:
-        if jumpstat == 1:
-            jumpstat = 0
-            retval = 1
-        else :
-            retval = 0
-    else :
-        jumpstat = 1
-    jump_lock.release()
-    return retval
-
 def calibrate():
-    global q
-    print "calibrating"
-    global calib_lock
-    global calib_finished
-    calib_lock.acquire(True)
-    #time.sleep(1.5)
-    global threshold
-    count = 0
-    valuemaxc1 = 50
-    valuemaxc2 = 50
-    valuemaxc3 = 50
-    for i in range(150):
-        valueabsc = 0
-        valuec = q.get()
+    pass
 
-        #take abs of data around the average
-        if valuec <= 500:
-            valueabsc = 500 - valuec
-        else :
-            valueabsc = valuec - 500
+# def calibrate():
+#     global q
+#     print "calibrating"
+#     global calib_lock
+#     global calib_finished
+#     calib_lock.acquire(True)
+#     #time.sleep(1.5)
+#     global threshold
+#     count = 0
+#     valuemaxc1 = 50
+#     valuemaxc2 = 50
+#     valuemaxc3 = 50
+#     for i in range(150):
+#         valueabsc = 0
+#         valuec = q.get()
 
-        #ignore large values
-        if valueabsc >= 130:
-            pass
+#         #take abs of data around the average
+#         if valuec <= 500:
+#             valueabsc = 500 - valuec
+#         else :
+#             valueabsc = valuec - 500
 
-        #keep track of the 3 highest values
-        elif valueabsc > valuemaxc1:
-            valuemaxc3 = valuemaxc2
-            valuemaxc2 = valuemaxc1
-            valuemaxc1 = valueabsc
-            time.sleep(0.005)
-            count += 1
-        elif (valueabsc > valuemaxc2):
-            valuemaxc3 = valuemaxc2
-            valuemaxc2 = valueabsc
-            time.sleep(0.005)
-            count += 1
-        elif (valueabsc > valuemaxc3):
-            valuemaxc3 = valueabsc
-            time.sleep(0.005)
-            count += 1
+#         #ignore large values
+#         if valueabsc >= 130:
+#             pass
+
+#         #keep track of the 3 highest values
+#         elif valueabsc > valuemaxc1:
+#             valuemaxc3 = valuemaxc2
+#             valuemaxc2 = valuemaxc1
+#             valuemaxc1 = valueabsc
+#             time.sleep(0.005)
+#             count += 1
+#         elif (valueabsc > valuemaxc2):
+#             valuemaxc3 = valuemaxc2
+#             valuemaxc2 = valueabsc
+#             time.sleep(0.005)
+#             count += 1
+#         elif (valueabsc > valuemaxc3):
+#             valuemaxc3 = valueabsc
+#             time.sleep(0.005)
+#             count += 1
     
-    #set threshold to default 
-    if valuemaxc1 == 50:
-        pass
+#     #set threshold to default 
+#     if valuemaxc1 == 50:
+#         pass
 
-    elif  (valuemaxc1-valuemaxc2)>=40 and (count>=2) :
+#     elif  (valuemaxc1-valuemaxc2)>=40 and (count>=2) :
 
-        if (valuemaxc1-valuemaxc3)>60:
-            if valuemaxc2-valuemaxc3<20 :
-                threshold = 0.75*(valuemaxc2+valuemaxc3)/2
-            else:
-                threshold = 0.75*valuemaxc2
+#         if (valuemaxc1-valuemaxc3)>60:
+#             if valuemaxc2-valuemaxc3<20 :
+#                 threshold = 0.75*(valuemaxc2+valuemaxc3)/2
+#             else:
+#                 threshold = 0.75*valuemaxc2
 
-        else:
-            threshold = 0.75*valuemaxc2
+#         else:
+#             threshold = 0.75*valuemaxc2
 
-    elif count == 1:
-        threshold = 0.75*valuemaxc1
-    elif count == 2:
-        threshold = 0.75*valuemaxc1
-    elif count == 3:
-        threshold = 0.75*((valuemaxc1+valuemaxc2)/2)
-    elif count >= 4:
+#     elif count == 1:
+#         threshold = 0.75*valuemaxc1
+#     elif count == 2:
+#         threshold = 0.75*valuemaxc1
+#     elif count == 3:
+#         threshold = 0.75*((valuemaxc1+valuemaxc2)/2)
+#     elif count >= 4:
 
-        if (valuemaxc1-valuemaxc3)>60 :
-            threshold = 0.75*( (valuemaxc1+valuemaxc2+valuemaxc3)/3 )
-        else:
-            threshold = 0.75*( (valuemaxc1+valuemaxc2+(valuemaxc3+20))/3 )
+#         if (valuemaxc1-valuemaxc3)>60 :
+#             threshold = 0.75*( (valuemaxc1+valuemaxc2+valuemaxc3)/3 )
+#         else:
+#             threshold = 0.75*( (valuemaxc1+valuemaxc2+(valuemaxc3+20))/3 )
 
-    else:
-        threshold = 0.75*valuemaxc1
-    print ("threshold")
-    print (threshold)
-    calib_finished = True
-    calib_lock.release()
+#     else:
+#         threshold = 0.75*valuemaxc1
+#     print ("threshold")
+#     print (threshold)
+#     calib_finished = True
+#     calib_lock.release()
 
 def flappyGame():
     global SCREEN, FPSCLOCK
@@ -347,7 +305,6 @@ def flappyGame():
         showCalibrationScreen()
         crashInfo = mainGame(movementInfo)
         showGameOverScreen(crashInfo)
-        #ser.write('C')
 
 def showCalibrationScreen():
     """Shows welcome screen animation of flappy bird"""
@@ -371,14 +328,16 @@ def showCalibrationScreen():
 
     # player shm for up-down motion on welcome screen
     playerShmVals = {'val': 0, 'dir': 1}
+    
+    #start of calibration block
     start = time.time()
     end = start + 5
     progress = 10
     pygame.draw.rect(SCREEN, gold, [100,100,204,49])
     pygame.draw.rect(SCREEN, black, [101,101,202,47])
     pygame.display.flip()
-    t = Thread(target = calibrate, args = ())
-    t.start()
+    #t = Thread(target = calibrate, args = ())
+    #t.start()
     while True:
         if time.time() > end and calib_finished == True:
             calib_finished = False
@@ -402,7 +361,7 @@ def showCalibrationScreen():
 
         pygame.display.update()
         FPSCLOCK.tick(FPS)
-        
+        #end of calibration block
         
 
 def showWelcomeAnimation():
@@ -426,10 +385,14 @@ def showWelcomeAnimation():
     # player shm for up-down motion on welcome screen
     playerShmVals = {'val': 0, 'dir': 1}
     global jumpq
-    
+    j=0
     while True:
 
-        j = jumpcheck(1)
+        try:
+            j = jumpq.get_nowait()
+            jumpq.task_done()
+        except EMPTY:
+            j=0
         if j == 1 or j == 2:
             SOUNDS['wing'].play()
 
@@ -470,6 +433,7 @@ def showWelcomeAnimation():
         
 
 def mainGame(movementInfo):
+    global jumpq
     score = playerIndex = loopIter = 0
     playerIndexGen = movementInfo['playerIndexGen']
     playerx, playery = int(SCREENWIDTH * 0.2), movementInfo['playery']
@@ -508,7 +472,11 @@ def mainGame(movementInfo):
     
     while True:
 
-        j = jumpcheck(1)
+        try:
+            j = jumpq.get_nowait()
+            jumpq.task_done()
+        except EMPTY:
+            j=0
         if j == 1 or j == 2:
             if playery > -2 * IMAGES['player'][0].get_height():
                     playerVelY = playerFlapAcc
@@ -634,11 +602,14 @@ def showGameOverScreen(crashInfo):
     messagex = int((SCREENWIDTH - IMAGES['gameover'].get_width()) / 2)
     messagey = int(SCREENHEIGHT * 0.12)
     global jumpq
-    
+    j = 0
     while True:
 
-        #
-        j = jumpcheck(1)
+        try:
+            j = jumpq.get_nowait()
+            jumpq.task_done()
+        except EMPTY:
+            j=0
         if j == 1 or j == 2:
             if playery + playerHeight >= BASEY - 1:
                 #jump = 0
