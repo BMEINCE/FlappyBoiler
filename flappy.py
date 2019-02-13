@@ -94,7 +94,7 @@ def serialread():
     while True:
         time.sleep(.005)
         if ser.read(1) == 'z':
-            read_serial = float(ser.read(3)) * (10/9)
+            read_serial = float(ser.read(3))
             q.put(read_serial)
             if q.qsize() > 5:
                 print (q.qsize())
