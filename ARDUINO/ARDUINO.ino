@@ -15,5 +15,4 @@ void loop() {
     Serial.print('z');
     Serial.println(value);
     Serial.flush();
-    //delay(5);
-  }
+}

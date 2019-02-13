@@ -99,7 +99,6 @@ def serialread():
 
             q.join()
             graphq.join()
-    
 
 def jumpThread():
     global jumpq
@@ -130,10 +129,13 @@ def jumpThread():
                 #do the jump
         else:
             pass
+        q.task_done()
 
 
 def graphStart():
+    print("graph")
     ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=35, blit = True)
+    print("graph")
     plt.show()
     print("graph")
     
