@@ -48,19 +48,6 @@ jumpq = Queue(maxsize=1)
 
 # list of all possible players (tuple of 3 positions of flap)
 PLAYERS_LIST = (
-    # red bird
-    (
-        'assets/sprites/train_8bit.png',
-        'assets/sprites/train_8bit.png',
-        'assets/sprites/train_8bit.png',
-    ),
-    # blue bird
-    (
-        # amount by which base can maximum shift to left
-        'assets/sprites/train_8bit.png',
-        'assets/sprites/train_8bit.png',
-        'assets/sprites/train_8bit.png',
-    ),
     # yellow bird
     (
         'assets/sprites/train_8bit.png',
@@ -103,6 +90,8 @@ def serialread():
             sensor.append(read_serial)
             sensor_lock.release()
 
+def threshUpdate():
+    
 
 def jumpThread():
     global jump
