@@ -21,7 +21,7 @@ fig = plt.figure()
 ax1 = fig.add_subplot(1,1,1)
 y_range = [100,1000]
 sensor = list(range(450,500))
-threshold = 50
+threshold = 0
 timeAxis = list(range(0,50))
 ax1.set_ylim(y_range)
 line, = ax1.plot(timeAxis,sensor)
@@ -91,6 +91,16 @@ def serialread():
             sensor_lock.release()
 
 def threshUpdate():
+    global sensor
+    global threshold
+    sum = 0
+    threshold = 0
+    data = [sensor]
+    for (data):
+        sum = sum + data
+        sum = sum / 2
+        
+        
     
 
 def jumpThread():
