@@ -98,8 +98,8 @@ def threshUpdate():
     data = [sensor]
     for (data):
         sum = sum + data
-        sum = sum / 2
-        
+        avg = data / sum
+        threshold = avg * 1.5 
         
     
 
