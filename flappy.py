@@ -505,11 +505,13 @@ def mainGame(movementInfo):
     playerRotThr  =  40   # rotation threshold
     playerFlapAcc =  -4.5   # players speed on flapping
     playerFlapped = False # True when player flaps
-    
+
+    future = time.time()
     while True:
 
         j = jumpcheck(1)
-        if j == 1 or j == 2:
+        if (j == 1 or j == 2) and (time.time() > future):
+            future = time.time() + 0.65
             if playery > -2 * IMAGES['player'][0].get_height():
                     playerVelY = playerFlapAcc
                     playerFlapped = True
