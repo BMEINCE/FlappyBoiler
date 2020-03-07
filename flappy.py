@@ -2,48 +2,55 @@ import serial
 from itertools import cycle
 import random
 import sys
-import serial
 import time
-import mutex
 import threading
 import matplotlib
 from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
+import matplotlib.backends.backend_tkagg as FigureCanvasTkAgg
 import numpy as np
 import matplotlib.animation as animation
 from threading import Thread
 from threading import Lock
 import pygame
 from pygame.locals import *
-from Queue import *
+from queue import *
+import shelve
+import re
+import RPi.GPIO as GPIO
 
-
-fig = plt.figure()
-ax1 = fig.add_subplot(1,1,1)
-y_range = [100,1000]
 sensor = list(range(450,500))
 threshold = 50
-timeAxis = list(range(0,50))
-ax1.set_ylim(y_range)
-line, = ax1.plot(timeAxis,sensor)
+dataAvg = 510 #average or midpoint of the EMG signal
+
+#Locks are used when multiple threads may be using the same variable
+#to ensure only one thread can access it at a time
 calib_lock = threading.Lock()
 calib_finished = False
 jump_lock = threading.Lock()
 sensor_lock = threading.Lock()
-jump = 0
-jumpstat = 0
+
+
 gold = [194,142,14]
 black = [0,0,0]
 FPS = 60
+#SCREENWIDTH  = 288
+#SCREENHEIGHT = 512
+
 SCREENWIDTH  = 288
 SCREENHEIGHT = 512
 # amount by which base can maximum shift to left
 PIPEGAPSIZE  = 110 # gap between upper and lower part of pipe
-BASEY        = SCREENHEIGHT * 0.79
+#BASEY        = SCREENHEIGHT * 0.79
+BASEY        = SCREENHEIGHT
 # image, sound and hitjump = 0mask  dicts
 IMAGES, SOUNDS, HITMASKS = {}, {}, {}
 s=[0]
 
-q = Queue()
+#passes data from serialread to either jumpthread or calibthread
+dataq = Queue()
+#Jumpthread will put a '1' in jumpq if the bird should jump, the game will read
+#from jumpq when needed
 jumpq = Queue(maxsize=1)
 
 # list of all possible players (tuple of 3 positions of flap)
@@ -71,8 +78,10 @@ PLAYERS_LIST = (
 
 # list of backgrounds
 BACKGROUNDS_LIST = (
+    #'assets/sprites/Bell_Tower_8bit.png',
     'assets/sprites/Bell_Tower_8bit.png',
-    'assets/sprites/Bell_Tower_8bit.png',
+    #'assets/sprites/spider.jpg',
+    
 )
 
 # list of pipes
@@ -86,29 +95,28 @@ try:
 except NameError:
     xrange = range
 
+#reads the incoming EMG data from the serial connection
 def serialread():
     global sensor_lock
     global sensor
-    global q
-    jdata = 0
+    global dataq
     while True:
         time.sleep(.005)
-        if ser.read(1) == 'z':
-            read_serial = (float(ser.read(3))*10)/9
-            q.put(read_serial)
-            if q.qsize() > 5:
-                print (q.qsize())
+        if ser.read(1) == b'z':
+            s = ser.read(3)
+            #read_serial = (float(ser.read(3))*10)/9
+            read_serial = (float(s)*10)/9
+            dataq.put(read_serial)
             sensor_lock.acquire(True)
             sensor.pop(0)
             sensor.append(read_serial)
             sensor_lock.release()
 
-
 def jumpThread():
     global jump
     global threshold
-    global datajump
-    global q
+    global dataAvg
+    global dataq
     global calib_lock
     counter = 0
     state = 0
@@ -121,79 +129,35 @@ def jumpThread():
 
         #acquire lock before accessing q
         calib_lock.acquire(True)
-        data = q.get()
+        data = dataq.get()
         calib_lock.release()
 
         #essentially abs(data - average_data_value)
         #the average_data_value of the signal has been observed to be 510
-        if data >= 500:
-            data = data - 500
+        if data >= dataAvg:
+            data = data - dataAvg
         else:
-            data = 500 - data
+            data = dataAvg- data
 
         if int(data/threshold)>=1:
             if state == 1:
                 time.sleep(0.005)
             else:
                 state = 1
-                jumpcheck(2)
+                try:
+                    jumpq.put_nowait(1)
+                except:
+                    pass
                 time.sleep(0.005)
         else:
             counter += 1
             time.sleep(0.005)
-        '''
-        if read == 0:
-            time.sleep(0.01)
-            read = 1
-        elif int(data/threshold) >= 1:
-            counter = 0
-            if state == 1:
-                time.sleep(0.005)
-            else:
-                state = 1
-                jumpcheck(2)
-                read = 0
-                time.sleep(0.005)
-        else:
-            counter += 1
-        '''
-
-def graphStart():
-    ani = animation.FuncAnimation(fig, graphFunc,fargs=(), interval=35, blit = True)
-    plt.show()
-    
-def graphFunc(i):
-    global sensor
-    global sensor_lock
-    sensor_lock.acquire(True)
-    line.set_ydata(sensor)
-    sensor_lock.release()
-    return line,
-
-#1 returns value, 2 sets to jump
-#Used to control communication of jumps to ensure thread safety
-
-def jumpcheck(i):
-    global jumpstat
-    global jump_lock
-    jump_lock.acquire(True)
-    retval = 0
-    if i == 1:
-        if jumpstat == 1:
-            jumpstat = 0
-            retval = 1
-        else :
-            retval = 0
-    else :
-        jumpstat = 1
-    jump_lock.release()
-    return retval
-
+     
 def calibrate():
-    global q
-    print "calibrating"
+    global dataq
     global calib_lock
     global calib_finished
+    global dataAvg
     calib_lock.acquire(True)
     #time.sleep(1.5)
     global threshold
@@ -203,13 +167,13 @@ def calibrate():
     valuemaxc3 = 50
     for i in range(150):
         valueabsc = 0
-        valuec = q.get()
+        valuec = dataq.get()
 
         #take abs of data around the average
-        if valuec <= 500:
-            valueabsc = 500 - valuec
+        if valuec <= dataAvg:
+            valueabsc = dataAvg - valuec
         else :
-            valueabsc = valuec - 500
+            valueabsc = valuec - dataAvg
 
         #ignore large values
         if valueabsc >= 130:
@@ -240,38 +204,44 @@ def calibrate():
 
         if (valuemaxc1-valuemaxc3)>60:
             if valuemaxc2-valuemaxc3<20 :
-                threshold = 0.75*(valuemaxc2+valuemaxc3)/2
+                threshold = 0.55*(valuemaxc2+valuemaxc3)/2
             else:
-                threshold = 0.75*valuemaxc2
+                threshold = 0.55*valuemaxc2
 
         else:
-            threshold = 0.75*valuemaxc2
+            threshold = 0.55*valuemaxc2
 
     elif count == 1:
-        threshold = 0.75*valuemaxc1
+        threshold = 0.55*valuemaxc1
     elif count == 2:
-        threshold = 0.75*valuemaxc1
+        threshold = 0.55*valuemaxc1
     elif count == 3:
-        threshold = 0.75*((valuemaxc1+valuemaxc2)/2)
+        threshold = 0.55*((valuemaxc1+valuemaxc2)/2)
     elif count >= 4:
 
         if (valuemaxc1-valuemaxc3)>60 :
-            threshold = 0.75*( (valuemaxc1+valuemaxc2+valuemaxc3)/3 )
+            threshold = 0.55*( (valuemaxc1+valuemaxc2+valuemaxc3)/3 )
         else:
-            threshold = 0.75*( (valuemaxc1+valuemaxc2+(valuemaxc3+20))/3 )
+            threshold = 0.55*( (valuemaxc1+valuemaxc2+(valuemaxc3+20))/3 )
 
     else:
-        threshold = 0.75*valuemaxc1
-    print ("threshold")
-    print (threshold)
+        threshold = 0.55*valuemaxc1
+    print ("threshold") #used for debugging, can be removed
+    print (threshold) #used for debugging, can be removed
     calib_finished = True
     calib_lock.release()
 
 def flappyGame():
-    global SCREEN, FPSCLOCK
+    global SCREEN, FPSCLOCK, size
     pygame.init()
     FPSCLOCK = pygame.time.Clock()
+
+    #SCREEN = pygame.display.set_mode((1000, 1000,), pygame.FULLSCREEN)
+    #SCREEN = pygame.display.set_mode((SCREENWIDTH, SCREENHEIGHT,), pygame.FULLSCREEN)
     SCREEN = pygame.display.set_mode((SCREENWIDTH, SCREENHEIGHT))
+
+
+    
     pygame.display.set_caption('Flappy Bird')
 
     # numbers sprites for score display
@@ -288,6 +258,36 @@ def flappyGame():
         pygame.image.load('assets/sprites/9.png').convert_alpha()
     )
 
+    IMAGES['letters'] = (
+        pygame.image.load('assets/letters/A.png').convert_alpha(),
+        pygame.image.load('assets/letters/B.png').convert_alpha(),
+        pygame.image.load('assets/letters/C.png').convert_alpha(),
+        pygame.image.load('assets/letters/D.png').convert_alpha(),
+        pygame.image.load('assets/letters/E.png').convert_alpha(),
+        pygame.image.load('assets/letters/F.png').convert_alpha(),
+        pygame.image.load('assets/letters/G.png').convert_alpha(),
+        pygame.image.load('assets/letters/H.png').convert_alpha(),
+        pygame.image.load('assets/letters/I.png').convert_alpha(),
+        pygame.image.load('assets/letters/J.png').convert_alpha(),
+        pygame.image.load('assets/letters/K.png').convert_alpha(),
+        pygame.image.load('assets/letters/L.png').convert_alpha(),
+        pygame.image.load('assets/letters/M.png').convert_alpha(),
+        pygame.image.load('assets/letters/N.png').convert_alpha(),
+        pygame.image.load('assets/letters/O.png').convert_alpha(),
+        pygame.image.load('assets/letters/P.png').convert_alpha(),
+        pygame.image.load('assets/letters/Q.png').convert_alpha(),
+        pygame.image.load('assets/letters/R.png').convert_alpha(),
+        pygame.image.load('assets/letters/S.png').convert_alpha(),
+        pygame.image.load('assets/letters/T.png').convert_alpha(),
+        pygame.image.load('assets/letters/U.png').convert_alpha(),
+        pygame.image.load('assets/letters/V.png').convert_alpha(),
+        pygame.image.load('assets/letters/W.png').convert_alpha(),
+        pygame.image.load('assets/letters/X.png').convert_alpha(),
+        pygame.image.load('assets/letters/Y.png').convert_alpha(),
+        pygame.image.load('assets/letters/Z.png').convert_alpha()
+    )
+
+  
     # game over sprite
     IMAGES['gameover'] = pygame.image.load('assets/sprites/gameover.png').convert_alpha()
     # message sprite for welcome screen
@@ -298,15 +298,12 @@ def flappyGame():
     IMAGES['base'] = pygame.image.load('assets/sprites/base.png').convert_alpha()
 
     # sounds
-    if 'win' in sys.platform:
-        soundExt = '.wav'
-    else:
-        soundExt = '.ogg'
+    soundExt = '.wav'
 
     SOUNDS['die']    = pygame.mixer.Sound('assets/audio/die' + soundExt)
     SOUNDS['hit']    = pygame.mixer.Sound('assets/audio/smack' + soundExt)
     SOUNDS['point']  = pygame.mixer.Sound('assets/audio/score_bell' + soundExt)
-    SOUNDS['swoosh'] = pygame.mixer.Sound('assets/audio/swoosh' + soundExt)
+    SOUNDS['swoosh'] = pygame.mixer.Sound('assets/audio/swoosh.ogg')
     SOUNDS['wing']   = pygame.mixer.Sound('assets/audio/Real_choo_choo' + soundExt)
 
     while True:
@@ -346,7 +343,38 @@ def flappyGame():
         movementInfo = showWelcomeAnimation()
         showCalibrationScreen()
         crashInfo = mainGame(movementInfo)
-        showGameOverScreen(crashInfo)
+        score = showGameOverScreen(crashInfo)
+        
+        #d = shelve.open('scores.dat')
+        scoreArray = [None] * 10
+        f = open("scores.txt", "r")
+        i = 0
+        for x in f:
+            scoreArray[i] = x
+            i = i + 1
+
+        print (scoreArray[0])
+        print (scoreArray[1])
+        print (scoreArray[2])
+        print (scoreArray[3])
+        print (scoreArray[4])
+        print (scoreArray[5])
+        print (scoreArray[6])
+        print (scoreArray[7])
+        print (scoreArray[8])
+        print (scoreArray[9])
+        
+        #scoreArray = [d['s1'], d['s2'], d['s3'], d['s4'], d['s5'], d['s6'], d['s7'], d['s8'], d['s9'], d['s10']]
+        
+        last = int(scoreArray[9].split()[1])
+        print ("last: " + str(last))
+        if ((score/2) > last):
+            highScoreInput(score)
+        #highScoreInput(score)
+        #d.close()
+
+        showHighScoreScreen()
+        
         #ser.write('C')
 
 def showCalibrationScreen():
@@ -426,10 +454,14 @@ def showWelcomeAnimation():
     # player shm for up-down motion on welcome screen
     playerShmVals = {'val': 0, 'dir': 1}
     global jumpq
+    j = 0
     
     while True:
-
-        j = jumpcheck(1)
+        
+        try:
+            j = jumpq.get_nowait()
+        except:
+            j = 0
         if j == 1 or j == 2:
             SOUNDS['wing'].play()
 
@@ -506,12 +538,43 @@ def mainGame(movementInfo):
     playerFlapAcc =  -4.5   # players speed on flapping
     playerFlapped = False # True when player flaps
 
-    future = time.time()
-    while True:
+    cooldownBuffer = time.time()    #coolDownBuffer is initially set to the current time
 
-        j = jumpcheck(1)
-        if (j == 1 or j == 2) and (time.time() > future):
-            future = time.time() + 0.65
+    f = open("scores.txt", "w+")
+    f.write("1:14:1   123\n")
+    f.write("19:8:12  099\n")
+    f.write("9:0:23   087\n")
+    f.write("3:8:11   050\n")
+    f.write("12:0:23  041\n")
+    f.write("9:8:11   040\n")
+    f.write("15:14:7  037\n")
+    f.write("23:14:23 035\n")
+    f.write("13:8:10  011\n")
+    f.write("15:4:19  003\n")
+
+    f.close()
+
+    
+    #d = shelve.open('scores.dat')
+    #d['s1']  = "1:14:1   123"
+    #d['s2']  = "19:8:12  099"
+    #d['s3']  = "9:0:23   087"
+    #d['s4']  = "3:8:11   050"
+    #d['s5']  = "12:0:23  041"
+    #d['s6']  = "9:8:11   040"
+    #d['s7']  = "15:14:7  037"
+    #d['s8']  = "23:14:23 035"
+    #d['s9']  = "13:8:10  011"
+    #d['s10'] = "15:4:19  008"
+
+    #d.close()
+    while True:
+        try:
+            j = jumpq.get_nowait()
+        except:
+            j = 0
+        if (j == 1 or j == 2) and (time.time() > cooldownBuffer):   #jump can only occur when current time > buffer
+            cooldownBuffer = time.time() + .65                   #Every jump, buffer is set to .65 seconds in the future
             if playery > -2 * IMAGES['player'][0].get_height():
                     playerVelY = playerFlapAcc
                     playerFlapped = True
@@ -613,8 +676,8 @@ def mainGame(movementInfo):
 
 def showGameOverScreen(crashInfo):
     """crashes the player down and shows gameover image"""
-    global q
-    q.queue.clear()
+    global dataq
+    dataq.queue.clear()
     score = crashInfo['score']
     playerx = SCREENWIDTH * 0.2
     playery = crashInfo['y']
@@ -636,15 +699,17 @@ def showGameOverScreen(crashInfo):
     messagex = int((SCREENWIDTH - IMAGES['gameover'].get_width()) / 2)
     messagey = int(SCREENHEIGHT * 0.12)
     global jumpq
-    
+
     while True:
 
-        #
-        j = jumpcheck(1)
+        try:
+            j = jumpq.get_nowait()
+        except:
+            j = 0 #no jump was in the queue
         if j == 1 or j == 2:
             if playery + playerHeight >= BASEY - 1:
                 #jump = 0
-                return
+                return score
         
         else:
         
@@ -654,7 +719,7 @@ def showGameOverScreen(crashInfo):
                     sys.exit()
                 if event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP):
                     if playery + playerHeight >= BASEY - 1:
-                        return
+                        return score
     
         # player y shift
         if playery + playerHeight < BASEY - 1:
@@ -679,14 +744,453 @@ def showGameOverScreen(crashInfo):
 
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
         showScore(score/2)
-
+        
         playerSurface = pygame.transform.rotate(IMAGES['player'][1], playerRot)
         SCREEN.blit(playerSurface, (playerx,playery))
 
         FPSCLOCK.tick(FPS)
         pygame.display.update()
 
+def highScoreInput(score):
+    """checks to see if score breaks leaderboard"""
 
+    # index of player to blit on screen
+    playerIndex = 0
+    playerIndexGen = cycle([0, 1, 2, 1])
+    # iterator used to change playerIndex after every 5th iteration
+    loopIter = 0
+
+    playerx = int(SCREENWIDTH * 0.2)
+    playery = int((SCREENHEIGHT - IMAGES['player'][0].get_height()) / 2)
+
+    messagex = int((SCREENWIDTH - IMAGES['message'].get_width()) / 2)
+    messagey = int(SCREENHEIGHT * 0.12)
+
+    basex = 0
+    # amount by which base can maximum shift to left
+    baseShift = IMAGES['base'].get_width() - IMAGES['background'].get_width()
+
+    # player shm for up-down motion on welcome screen
+    playerShmVals = {'val': 0, 'dir': 1}
+    global jumpq
+    j = 0
+
+    GPIO.setmode(GPIO.BCM)
+
+    GPIO.setup(17,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    GPIO.setup(27,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    GPIO.setup(22,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    GPIO.setup(23,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    GPIO.setwarnings(False)
+
+    GPIO.setup(16,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    initial = [0, 0, 0]
+    x = 0
+    while True:
+        input_state = GPIO.input(17)
+        input_state2 = GPIO.input(27)
+        input_state3 = GPIO.input(22)
+        input_state4 = GPIO.input(23)
+        input_state5 = GPIO.input(16)
+        
+        if input_state == False:
+            print("Up")
+        
+        if input_state2 == False:
+            print("Down")
+       
+        if input_state3 == False:
+            print("Left")
+            
+        if input_state4 == True:
+            print("Right")
+
+        try:
+            j = jumpq.get_nowait()
+        except:
+            j = 0
+        if input_state5 == False:
+            print ("in if")    
+            SOUNDS['wing'].play()
+            time.sleep(.2)
+
+            scoreArray = [None] * 10
+            f = open("scores.txt", "r")
+            i = 0
+            for x in f:
+                scoreArray[i] = x
+                i = i + 1
+            f.close()
+            #d = shelve.open('scores.dat')
+
+            #scoreArray = [d['s1'], d['s2'], d['s3'], d['s4'], d['s5'], d['s6'], d['s7'], d['s8'], d['s9'], d['s10']]
+
+            first = int(scoreArray[0].split()[1])
+            second = int(scoreArray[1].split()[1])
+            third = int(scoreArray[2].split()[1])
+            fourth = int(scoreArray[3].split()[1])
+            fifth = int(scoreArray[4].split()[1])
+            sixth = int(scoreArray[5].split()[1])
+            seventh = int(scoreArray[6].split()[1])
+            eighth = int(scoreArray[7].split()[1])
+            ninth = int(scoreArray[8].split()[1])
+            last = int(scoreArray[9].split()[1])
+
+            if(score/2) < 10:
+                scoreString = "00" + str(int(score/2))
+            elif(score/2) < 100:
+                scoreString = "0" + str(int(score/2))
+            else:
+                scoreString = str(int(score/2))
+
+
+            if ((score/2 > last)):
+                scoreArray[9] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString + '\n'
+
+            print(scoreArray[9])
+            
+            f = open("scores.txt", "w")
+            f.write(scoreArray[0])
+            f.write(scoreArray[1])
+            f.write(scoreArray[2])
+            f.write(scoreArray[3])
+            f.write(scoreArray[4])
+            f.write(scoreArray[5])
+            f.write(scoreArray[6])
+            f.write(scoreArray[7])
+            f.write(scoreArray[8])
+            f.write(scoreArray[9])
+            f.close()
+            
+            """
+            if ((score/2) > first):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = d['s5']
+                d['s5'] = d['s4']
+                d['s4'] = d['s3']
+                d['s3'] = d['s2']
+                d['s2'] = d['s1']
+                d['s1'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > second):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = d['s5']
+                d['s5'] = d['s4']
+                d['s4'] = d['s3']
+                d['s3'] = d['s2']
+                d['s2'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > third):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = d['s5']
+                d['s5'] = d['s4']
+                d['s4'] = d['s3']
+                d['s3'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > fourth):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = d['s5']
+                d['s5'] = d['s4']
+                d['s4'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > fifth):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = d['s5']
+                d['s5'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > sixth):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = d['s6']
+                d['s6'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > seventh):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = d['s7']
+                d['s7'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > eighth):
+                d['s10'] = d['s9']
+                d['s9'] = d['s8']
+                d['s8'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > ninth):
+                d['s10'] = d['s9']
+                d['s9'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            elif ((score/2) > last):
+                d['s10'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+            
+            f.close()
+            """
+            return {
+                    'playery': playery + playerShmVals['val'],
+                    'basex': basex,
+                    'playerIndexGen': playerIndexGen,
+                    }
+        else:
+            for event in pygame.event.get():
+                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                    pygame.quit()
+                    sys.exit()
+                #if (event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP)):
+                if input_state5 == False:
+                    print ("in else")
+                    # make first flap sound and return values for mainGame
+                    SOUNDS['wing'].play()
+                    time.sleep(.2)
+
+                    d = shelve.open('scores.dat')
+
+                    scoreArray = [d['s1'], d['s2'], d['s3'], d['s4'], d['s5'], d['s6'], d['s7'], d['s8'], d['s9'], d['s10']]
+
+                    first = int(scoreArray[0].split()[1])
+                    second = int(scoreArray[1].split()[1])
+                    third = int(scoreArray[2].split()[1])
+                    fourth = int(scoreArray[3].split()[1])
+                    fifth = int(scoreArray[4].split()[1])
+                    sixth = int(scoreArray[5].split()[1])
+                    seventh = int(scoreArray[6].split()[1])
+                    eighth = int(scoreArray[7].split()[1])
+                    ninth = int(scoreArray[8].split()[1])
+                    last = int(scoreArray[9].split()[1])
+
+                    if(score/2) < 10:
+                        scoreString = "00" + str(score/2)
+                    elif(score/2) < 100:
+                        scoreString = "0" + str(score/2)
+                    else:
+                        scoreString = str(score/2)
+
+
+                    if ((score/2) > first):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = d['s5']
+                        d['s5'] = d['s4']
+                        d['s4'] = d['s3']
+                        d['s3'] = d['s2']
+                        d['s2'] = d['s1']
+                        d['s1'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > second):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = d['s5']
+                        d['s5'] = d['s4']
+                        d['s4'] = d['s3']
+                        d['s3'] = d['s2']
+                        d['s2'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > third):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = d['s5']
+                        d['s5'] = d['s4']
+                        d['s4'] = d['s3']
+                        d['s3'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > fourth):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = d['s5']
+                        d['s5'] = d['s4']
+                        d['s4'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > fifth):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = d['s5']
+                        d['s5'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > sixth):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = d['s6']
+                        d['s6'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > seventh):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = d['s7']
+                        d['s7'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > eighth):
+                        d['s10'] = d['s9']
+                        d['s9'] = d['s8']
+                        d['s8'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > ninth):
+                        d['s10'] = d['s9']
+                        d['s9'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    elif ((score/2) > last):
+                        d['s10'] = str(initial[0]) + ":" + str(initial[1]) + ":" + str(initial[2]) + " " + scoreString
+                    
+                    d.close()
+                    
+                    return {
+                        'playery': playery + playerShmVals['val'],
+                        'basex': basex,
+                        'playerIndexGen': playerIndexGen,
+                    }
+        # adjust playery, playerIndex, basex
+        if (loopIter + 1) % 5 == 0:
+            playerIndex = next(playerIndexGen)
+        loopIter = (loopIter + 1) % 30
+        basex = -((-basex + 4) % baseShift)
+        playerShm(playerShmVals)
+
+        # draw sprites
+        SCREEN.blit(IMAGES['background'], (0,0))
+        SCREEN.blit(pygame.image.load('assets/letters/highScore.png').convert_alpha(), (int((SCREENWIDTH - pygame.image.load('assets/letters/highScore.png').convert_alpha().get_width()) / 2),int(SCREENHEIGHT * 0.12)))
+        #SCREEN.blit(IMAGES['base'], (basex, BASEY))
+
+        y = 150
+        SCREEN.blit(IMAGES['letters'][initial[0]], (107,y))
+        SCREEN.blit(IMAGES['letters'][initial[1]], (107 + 27,y))
+        SCREEN.blit(IMAGES['letters'][initial[2]], (107 + 27 + 27,y))
+        if input_state == False:
+            initial[x] = initial[x] - 1
+            if initial[x] < 0:
+                initial[x] = 25
+            time.sleep(.1)
+                
+        if input_state2 == False:
+            initial[x] = initial[x] + 1
+            if initial[x] > 25:
+                initial[x] = 0
+            time.sleep(.1)
+                
+        if input_state3 == True:
+            x = x - 1
+            if x < 0:
+                x = 0
+            time.sleep(.1)
+                
+        if input_state4 == False:
+            x = x + 1
+            if x > 2:
+                x = 2
+            time.sleep(.1)
+
+        pygame.display.update()
+        FPSCLOCK.tick(FPS)
+    
+def showHighScoreScreen():
+    # index of player to blit on screen
+    playerIndex = 0
+    playerIndexGen = cycle([0, 1, 2, 1])
+    # iterator used to change playerIndex after every 5th iteration
+    loopIter = 0
+
+    playerx = int(SCREENWIDTH * 0.2)
+    playery = int((SCREENHEIGHT - IMAGES['player'][0].get_height()) / 2)
+
+    messagex = int((SCREENWIDTH - IMAGES['message'].get_width()) / 2)
+    messagey = int(SCREENHEIGHT * 0.12)
+
+    basex = 0
+    # amount by which base can maximum shift to left
+    baseShift = IMAGES['base'].get_width() - IMAGES['background'].get_width()
+
+    # player shm for up-down motion on welcome screen
+    playerShmVals = {'val': 0, 'dir': 1}
+    global jumpq
+    j = 0
+    GPIO.setmode(GPIO.BCM)
+
+    GPIO.setwarnings(False)
+
+    GPIO.setup(16,GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    while True:
+        input_state5 = GPIO.input(16)
+        try:
+            j = jumpq.get_nowait()
+        except:
+            j = 0
+        if input_state5 == False:
+            SOUNDS['wing'].play()
+
+            return {
+                    'playery': playery + playerShmVals['val'],
+                    'basex': basex,
+                    'playerIndexGen': playerIndexGen,
+                    }
+        else:
+            for event in pygame.event.get():
+                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                    pygame.quit()
+                    sys.exit()
+                if input_state5 == False:
+                    # make first flap sound and return values for mainGame
+                    SOUNDS['wing'].play()
+                    return {
+                        'playery': playery + playerShmVals['val'],
+                        'basex': basex,
+                        'playerIndexGen': playerIndexGen,
+                    }
+        # adjust playery, playerIndex, basex
+        if (loopIter + 1) % 5 == 0:
+            playerIndex = next(playerIndexGen)
+        loopIter = (loopIter + 1) % 30
+        basex = -((-basex + 4) % baseShift)
+        playerShm(playerShmVals)
+
+        # draw sprites
+        SCREEN.blit(IMAGES['background'], (0,0))
+
+        #d = shelve.open('scores.dat')
+        #scoreArray = [d['s1'], d['s2'], d['s3'], d['s4'], d['s5'], d['s6'], d['s7'], d['s8'], d['s9'], d['s10']]
+
+        scoreArray = [None] * 10
+        f = open("scores.txt", "r")
+        i = 0
+        for x in f:
+            scoreArray[i] = x
+            i = i + 1
+        
+        counter = 0
+        y = 30
+        iterate = 0
+        while counter < 10:
+            SCREEN.blit(IMAGES['letters'][int(scoreArray[iterate].split()[0].split(':')[0])], (56,y))
+            SCREEN.blit(IMAGES['letters'][int(scoreArray[iterate].split()[0].split(':')[1])], (56 + 27,y))
+            SCREEN.blit(IMAGES['letters'][int(scoreArray[iterate].split()[0].split(':')[2])], (56 + 27 + 27,y))
+
+            #print(int(scoreArray[iterate].split()[1]) / 100)
+            #print(int(scoreArray[iterate].split()[1]) // 100)
+
+            SCREEN.blit(IMAGES['numbers'][int(scoreArray[iterate].split()[1]) // 100], (56 + 27 + 27 + 27 + 27,y))
+            SCREEN.blit(IMAGES['numbers'][int(scoreArray[iterate].split()[1]) // 10 % 10], (56 + 27 + 27 + 27 + 27 + 27,y))
+            SCREEN.blit(IMAGES['numbers'][int(scoreArray[iterate].split()[1]) % 10], (56 + 27 + 27 + 27 + 27 + 27 + 27,y))
+            
+            counter += 1
+            y += 38
+            iterate += 1
+
+        f.close()
+        
+        SCREEN.blit(IMAGES['base'], (basex, BASEY))
+
+        pygame.display.update()
+        FPSCLOCK.tick(FPS)
+    
 def playerShm(playerShm):
     """oscillates the value of playerShm['val'] between 8 and -8"""
     if abs(playerShm['val']) == 8:
@@ -704,7 +1208,7 @@ def getRandomPipe():
     gapY = random.randrange(0, int(BASEY * 0.5 - PIPEGAPSIZE))
     gapY += int(BASEY * 0.175)
     pipeHeight = IMAGES['pipe'][0].get_height()
-    pipeX = SCREENWIDTH + 10
+    pipeX = SCREENWIDTH + 2
 
     return [
         {'x': pipeX, 'y': gapY - pipeHeight - 50},  # upper pipe
@@ -714,7 +1218,9 @@ def getRandomPipe():
 
 def showScore(score):
     """displays score in center of screen"""
-    scoreDigits = [int(x) for x in list(str(score))]
+    scoreDigits = [int(x) for x in list(str(int(score)))]
+    #print((score))
+    #scoreDigits = [1,2]
     totalWidth = 0 # total width of all numbers to be printed
 
     for digit in scoreDigits:
@@ -787,15 +1293,10 @@ def getHitmask(image):
             mask[x].append(bool(image.get_at((x,y))[3]))
     return mask
 
-
-
 ser = serial.Serial('/dev/ttyACM0', baudrate=115200, bytesize = 8, parity = 'N',stopbits = 1)
 t1 = Thread(target=serialread, args=())
 t1.start()
 t4 = Thread(target=jumpThread, args=())
 t4.start()
-t2 = Thread(target=graphStart, args=())
+t2 = Thread(target=flappyGame, args=())
 t2.start()
-t3 = Thread(target=flappyGame, args=())
-t3.start()
-
