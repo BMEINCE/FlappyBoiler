@@ -574,7 +574,9 @@ def mainGame(movementInfo):
 
     # get 2 new pipes to add to upperPipes lowerPipes list
     newPipe1 = getRandomPipe()
+    newCoin1 = getRandomCoin(newPipe1)
     newPipe2 = getRandomPipe()
+    newCoin2 = getRandomCoin(newPipe2)
 
     # list of upper pipes
     upperPipes = [
@@ -590,13 +592,10 @@ def mainGame(movementInfo):
 
     pipeVelX = -2
 
-    # get coins
-    newCoin = getRandomCoin()
-
     # list of coins
     coinPosition =[
-        {'x_coin': SCREENWIDTH + 200, 'y_coin': newCoin[0]['y_coin']},
-        {'x_coin': SCREENWIDTH + 200 + (SCREENWIDTH / 2), 'y_coin': newCoin[0]['y_coin']},
+        {'x': SCREENWIDTH + 200, 'y': newCoin1[0]['y']},
+        {'x': SCREENWIDTH + 200 + (SCREENWIDTH / 2), 'y': newCoin2[0]['y']},
     ]
 
     coinVelX = -2
@@ -613,7 +612,7 @@ def mainGame(movementInfo):
     playerFlapped = False # True when player flaps
 
     future = time.time()
-
+    ycoin = 0
     while True:
 
         j = jumpcheck(1)
@@ -692,8 +691,8 @@ def mainGame(movementInfo):
             lPipe['x'] += pipeVelX
 
         # move yellow coin to left
-        for Coin in range(0, SCREENWIDTH):
-            Coin += coinVelX
+        for Coin in coinPosition:
+            Coin['x'] += coinVelX
 
         # add new pipe when first pipe is about to touch left of screen
         if 0 < upperPipes[0]['x'] < 3:
@@ -707,23 +706,26 @@ def mainGame(movementInfo):
             lowerPipes.pop(0)
 
         # add new coin when first coin is about to touch left of screen
-        if 0 < coinPosition[0]['x_coin'] < 3:
-            newCoin = getRandomCoin()
-            coinPosition.append(newCoin[0]['x_coin'])
+        if 0 < coinPosition[0]['x'] < 3:
+            newCoin = getRandomCoin(newPipe)
+            coinPosition.append(newCoin[0])
 
         # removes first coin if its out of the screen
-        if coinPosition[0]['x_coin'] < -IMAGES['coin'][0].get_width():
+        if coinPosition[0]['x'] < -IMAGES['coin'][0].get_width():
             coinPosition.pop(0)
 
         # draw sprite
         SCREEN.blit(IMAGES['background'], (0,0))
 
-        ycoin = random.randint(0, PIPEGAPSIZE)
-
         for uPipe, lPipe in zip(upperPipes, lowerPipes):
             SCREEN.blit(IMAGES['pipe'][0], (uPipe['x'], uPipe['y']))
+#            print("lpipe x: " + str(lPipe['x']))
             SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
-            SCREEN.blit(IMAGES['coin'][0], (uPipe['x'] + PIPEWIDTHSIZE / 6, (lPipe['y'] - COINSIZE)))
+#            print("upipe x: " + str(uPipe['x']))
+
+#        print("coinPosition x: " + str(coinPosition[0]['x']))
+        SCREEN.blit(IMAGES['coin'][0], (coinPosition[0]['x'] + PIPEWIDTHSIZE / 6, coinPosition[0]['y']))
+        SCREEN.blit(IMAGES['coin'][0], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
 
 
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
@@ -807,7 +809,9 @@ def showGameOverScreen(crashInfo):
         for uPipe, lPipe in zip(upperPipes, lowerPipes):
             SCREEN.blit(IMAGES['pipe'][0], (uPipe['x'], uPipe['y']))
             SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
-            SCREEN.blit(IMAGES['coin'][0], (uPipe['x'], (uPipe['y'] + lPipe['y'])/2))
+
+        SCREEN.blit(IMAGES['coin'][0], (coinPosition[0]['x'] + PIPEWIDTHSIZE / 6, coinPosition[0]['y']))
+        SCREEN.blit(IMAGES['coin'][0], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
 
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
         showScore(score/2)
@@ -926,16 +930,13 @@ def getHitmask(image):
             mask[x].append(bool(image.get_at((x,y))[3]))
     return mask
 
-def getRandomCoin():
+def getRandomCoin(newPipe):
     """spawns coins, which increase the player's score."""
     # position of coin between the pipes
+    ycoin = newPipe[1]['y'] - COINSIZE - 2 * random.randint(0, PIPEGAPSIZE)
 
-
-    coinHeight = random.randint(5, 25)
-    ycoin = random.randint(0, PIPEGAPSIZE)
-    ycoin += int(BASEY * 0.175)
     return [
-        {'x_coin': pipeX, 'y_coin': PIPEGAPSIZE + coinHeight + ycoin}
+        {'x': newPipe[0]['x'], 'y': ycoin}
     ]
 
 #ser = serial.Serial('/dev/ttyACM0', baudrate=115200, bytesize = 8, parity = 'N',stopbits = 1)
