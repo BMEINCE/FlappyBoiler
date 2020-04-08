@@ -48,6 +48,8 @@ COIN_VALUE = 1
 # the size of the coin
 COINSIZE = 30
 coinScore = 0
+# color is transparent
+transparent = (0, 0, 0, 0)
 
 q = Queue()
 jumpq = Queue(maxsize=1)
@@ -635,9 +637,7 @@ def mainGame(movementInfo):
 
         # check for crash here
         crashTest = checkCrash({'x': playerx, 'y': playery, 'index': playerIndex},
-                               upperPipes, lowerPipes, coinScore)
-
-        score += crashTest[2]
+                               upperPipes, lowerPipes)
 
         if crashTest[0]:
             return {
@@ -658,10 +658,9 @@ def mainGame(movementInfo):
             if pipeMidPos <= playerMidPos < pipeMidPos + 4:
                 score += 1
                 SOUNDS['point'].play()
-#            coinPos = pipe['x'] + IMAGES['coin'][0].get_width() / 2
-#            if (coinPos <= playerMidPos < coinPos + 4) and ():
-#                score += 1
-#                SOUNDS['point'].play()
+            if checkCoin({'x': playerx, 'y': playery, 'index': playerIndex}, coinPosition):
+                score += 1
+                IMAGES['coin'][0].fill(transparent)
 
         # playerIndex basex change
         if (loopIter + 1) % 3 == 0:
@@ -714,18 +713,22 @@ def mainGame(movementInfo):
         if coinPosition[0]['x'] < -IMAGES['coin'][0].get_width():
             coinPosition.pop(0)
 
+            coinindex = random.randint(0, len(COINS_LIST) - 1)
+            picCoin = pygame.image.load(COINS_LIST[coinindex]).convert_alpha()
+            IMAGES['coin'] = (
+                pygame.transform.scale(picCoin, (COINSIZE, COINSIZE)),
+                pygame.transform.scale(picCoin, (COINSIZE, COINSIZE)),
+            )
+
         # draw sprite
         SCREEN.blit(IMAGES['background'], (0,0))
 
         for uPipe, lPipe in zip(upperPipes, lowerPipes):
             SCREEN.blit(IMAGES['pipe'][0], (uPipe['x'], uPipe['y']))
-#            print("lpipe x: " + str(lPipe['x']))
             SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
-#            print("upipe x: " + str(uPipe['x']))
 
-#        print("coinPosition x: " + str(coinPosition[0]['x']))
         SCREEN.blit(IMAGES['coin'][0], (coinPosition[0]['x'] + PIPEWIDTHSIZE / 6, coinPosition[0]['y']))
-        SCREEN.blit(IMAGES['coin'][0], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
+        SCREEN.blit(IMAGES['coin'][1], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
 
 
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
@@ -749,7 +752,7 @@ def showGameOverScreen(crashInfo):
     global q
     q.queue.clear()
     score = crashInfo['score']
-    playerx = SCREENWIDTH * 0.2
+    playerx = SCREENWID TH * 0.2
     playery = crashInfo['y']
     playerHeight = IMAGES['player'][0].get_height()
     playerVelY = crashInfo['playerVelY']
@@ -760,6 +763,7 @@ def showGameOverScreen(crashInfo):
     basex = crashInfo['basex']
 
     upperPipes, lowerPipes = crashInfo['upperPipes'], crashInfo['lowerPipes']
+    coinPosition = crashInfo['coinPosition']
 
     # play hit and die sounds
     SOUNDS['hit'].play()
@@ -811,7 +815,7 @@ def showGameOverScreen(crashInfo):
             SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
 
         SCREEN.blit(IMAGES['coin'][0], (coinPosition[0]['x'] + PIPEWIDTHSIZE / 6, coinPosition[0]['y']))
-        SCREEN.blit(IMAGES['coin'][0], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
+        SCREEN.blit(IMAGES['coin'][1], (coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y']))
 
         SCREEN.blit(IMAGES['base'], (basex, BASEY))
         showScore(score/2)
@@ -864,7 +868,7 @@ def showScore(score):
         Xoffset += IMAGES['numbers'][digit].get_width()
 
 
-def checkCrash(player, upperPipes, lowerPipes, coinScore):
+def checkCrash(player, upperPipes, lowerPipes):
     """returns True if player collders with base or pipes."""
     pi = player['index']
     player['w'] = IMAGES['player'][0].get_width()
@@ -884,26 +888,20 @@ def checkCrash(player, upperPipes, lowerPipes, coinScore):
             # upper and lower pipe rects
             uPipeRect = pygame.Rect(uPipe['x'], uPipe['y'], pipeW, pipeH)
             lPipeRect = pygame.Rect(lPipe['x'], lPipe['y'], pipeW, pipeH)
-            coinRect = pygame.Rect(uPipe['x'] + PIPEWIDTHSIZE / 6, lPipe['y'] - COINSIZE, COINSIZE, COINSIZE)
 
             # player and upper/lower pipe hitmasks
             pHitMask = HITMASKS['player'][pi]
             uHitmask = HITMASKS['pipe'][0]
             lHitmask = HITMASKS['pipe'][1]
-            coinHitmask = HITMASKS['coin'][0]
 
             # if bird collided with upipe or lpipe
             uCollide = pixelCollision(playerRect, uPipeRect, pHitMask, uHitmask)
             lCollide = pixelCollision(playerRect, lPipeRect, pHitMask, lHitmask)
-            coinCollide = pixelCollision(playerRect, coinRect, pHitMask, coinHitmask)
-
-            if coinCollide:
-                coinScore += 1
 
             if uCollide or lCollide:
-                return [True, False, coinScore]
+                return [True, False]
 
-    return [False, False,coinCollide]
+    return [False, False]
 
 def pixelCollision(rect1, rect2, hitmask1, hitmask2):
     """Checks if two objects collide and not just their rects"""
@@ -938,6 +936,33 @@ def getRandomCoin(newPipe):
     return [
         {'x': newPipe[0]['x'], 'y': ycoin}
     ]
+
+def checkCoin(player, coinPosition):
+    """returns False if player collides with coin."""
+    pi = player['index']
+    player['w'] = IMAGES['player'][0].get_width()
+    player['h'] = IMAGES['player'][0].get_height()
+
+    playerRect = pygame.Rect(player['x'], player['y'],
+                  player['w'], player['h'])
+
+    # coin 1 and 2 rects
+    coinRect1 = pygame.Rect(coinPosition[0]['x'] + PIPEWIDTHSIZE / 6, coinPosition[0]['y'], COINSIZE, COINSIZE)
+    coinRect2 = pygame.Rect(coinPosition[1]['x'] + PIPEWIDTHSIZE / 6, coinPosition[1]['y'], COINSIZE, COINSIZE)
+
+    #player and coin hitmasks
+    pHitMask = HITMASKS['player'][pi]
+    coinHitmask1 = HITMASKS['coin'][0]
+    coinHitmask2 = HITMASKS['coin'][1]
+
+    coinCollide1 = pixelCollision(playerRect, coinRect1, pHitMask, coinHitmask1)
+    coinCollide2 = pixelCollision(playerRect, coinRect2, pHitMask, coinHitmask2)
+
+    if coinCollide1 or coinCollide2:
+        return [True]
+
+    else:
+        return [False]
 
 #ser = serial.Serial('/dev/ttyACM0', baudrate=115200, bytesize = 8, parity = 'N',stopbits = 1)
 t1 = Thread(target=serialread, args=())
